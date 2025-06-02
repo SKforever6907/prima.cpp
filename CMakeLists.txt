@@ -141,6 +141,16 @@ else()
     message(STATUS "NDN support disabled (using ZeroMQ)")
 endif()
 
+# Advanced tokenizer API option
+option(LLAMA_TOKENIZER "llama: enable advanced tokenizer API" ON)
+
+if(LLAMA_TOKENIZER)
+    add_compile_definitions(LLAMA_TOKENIZER)
+    message(STATUS "Advanced tokenizer API enabled")
+else()
+    message(STATUS "Advanced tokenizer API disabled")
+endif()
+
 #
 # build the library
 #

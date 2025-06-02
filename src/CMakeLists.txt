@@ -27,6 +27,11 @@ if (LLAMA_NDN)
     list(APPEND LLAMA_SOURCES ndn-prima.cpp)
 endif()
 
+# Add tokenizer source file if tokenizer is enabled
+if (LLAMA_TOKENIZER)
+    list(APPEND LLAMA_SOURCES llama-tokenizer.cpp)
+endif()
+
 add_library(llama ${LLAMA_SOURCES})
 
 target_include_directories(llama PUBLIC . ../include)
