@@ -1,4 +1,8 @@
+#ifdef USE_NDN_INSTEAD_OF_ZMQ
+#include "ndn_prima.h"
+#else
 #include "zmq_addon.hpp"
+#endif
 
 #include "llama-impl.h"
 #include "llama-vocab.h"
@@ -3328,6 +3332,13 @@ struct llama_context {
         }
 
         ggml_backend_buffer_free(buf_output);
+        
+#ifdef USE_NDN_INSTEAD_OF_ZMQ
+        if (ndn_ctx) {
+            delete ndn_ctx;
+            ndn_ctx = nullptr;
+        }
+#endif
     }
 
     const struct llama_model  & model;
@@ -3415,16 +3426,21 @@ struct llama_context {
     struct ggml_tensor * inp_embd_enc;      // F32 [n_embd, n_outputs_enc]
     struct ggml_tensor * inp_KQ_mask_cross; // F32 [n_outputs_enc, n_batch]
 
-    // sockets
+    // networking
     std::string      master_ip     = "localhost";
     std::string      next_node_ip  = "localhost";
     uint32_t         data_port     = 9000;
     uint32_t         signal_port   = 10000;
+    
+#ifdef USE_NDN_INSTEAD_OF_ZMQ
+    ndn_prima::ndn_context * ndn_ctx = nullptr;
+#else
     zmq::context_t * sock_context  = nullptr;
     zmq::socket_t  * send_socket   = nullptr; 
     zmq::socket_t  * recv_socket   = nullptr; 
     zmq::socket_t  * master_socket = nullptr; 
     zmq::socket_t  * signal_socket = nullptr;
+#endif
 };
 
 struct llama_lora_weight {
@@ -17929,6 +17945,11 @@ static int llama_recv_meta(zmq::socket_t & socket, struct sync_meta * meta) {
     return 0;
 }
 
+#ifdef USE_NDN_INSTEAD_OF_ZMQ
+static void llama_send_tensors(struct llama_context * ctx, struct llama_ubatch * ubatch, struct input_tensors * tensors) {
+    llama_send_tensors_ndn(ctx, ubatch, tensors);
+}
+#else
 static void llama_send_tensors(zmq::socket_t & socket, struct llama_ubatch * ubatch, struct input_tensors * tensors) {
     try {
         std::vector<zmq::message_t> send_msgs;
@@ -17951,7 +17972,13 @@ static void llama_send_tensors(zmq::socket_t & socket, struct llama_ubatch * uba
         LLAMA_LOG_INFO("Failed to send tensor data: %s\n", e.what());
     }
 }
+#endif
 
+#ifdef USE_NDN_INSTEAD_OF_ZMQ
+static void llama_recv_tensors(struct llama_context * ctx, struct llama_ubatch * ubatch, const bool is_out_embd=false) {
+    llama_recv_tensors_ndn(ctx, ubatch, is_out_embd);
+}
+#else
 static void llama_recv_tensors(zmq::socket_t & socket, struct llama_ubatch * ubatch, const bool is_out_embd=false) {
     std::vector<zmq::message_t> recv_msgs;
     if (!zmq::recv_multipart(socket, std::back_inserter(recv_msgs))) {
@@ -17975,6 +18002,7 @@ static void llama_recv_tensors(zmq::socket_t & socket, struct llama_ubatch * uba
         }
     }
 }
+#endif
 
 static bool is_tensor_loaded(struct ggml_tensor * tensor) {
     void * addr = (void *)tensor->data;
@@ -18384,7 +18412,11 @@ static int llama_decode_internal(
             // receive data from other nodes
             if (n_world > 1 && !(my_rank == 0 && i == 0) && !(my_rank == 0 && is_last_l)) {
                 const bool is_out_embd = my_rank == 0 && i == (size_t)gf.size() - 1;
+#ifdef USE_NDN_INSTEAD_OF_ZMQ
+                llama_recv_tensors(&lctx, &ubatch, is_out_embd);
+#else
                 llama_recv_tensors(*lctx.recv_socket, &ubatch, is_out_embd);
+#endif
             }
 
             // ensure ggml_backend_tensor_get_async of the previous subgraph has finished
@@ -18431,10 +18463,14 @@ static int llama_decode_internal(
             // send the result to the next node or the master
             if (!(n_world == 1 || (my_rank == 0 && is_last_l))) {
                 struct input_tensors tensors = {sub_gf_out, lctx.inp_pos};
+                ggml_backend_sched_synchronize(lctx.sched[i]);
+#ifdef USE_NDN_INSTEAD_OF_ZMQ
+                llama_send_tensors(&lctx, &ubatch, &tensors);
+#else
                 const bool is_to_master = my_rank != 0 && is_last_l;
                 zmq::socket_t * s = is_to_master ? lctx.master_socket : lctx.send_socket;
-                ggml_backend_sched_synchronize(lctx.sched[i]);
                 llama_send_tensors(*s, &ubatch, &tensors);
+#endif
             }
 
             // overlap memory scheduling with other nodes' communication and computing
@@ -20342,6 +20378,9 @@ void llama_init_sockets(struct llama_context * ctx, uint32_t n_world, uint32_t m
         return; 
     }
 
+#ifdef USE_NDN_INSTEAD_OF_ZMQ
+    llama_init_ndn(ctx, n_world, my_rank);
+#else
     ctx->sock_context  = new zmq::context_t(2); 
     ctx->send_socket   = new zmq::socket_t(*ctx->sock_context, zmq::socket_type::push);
     ctx->recv_socket   = new zmq::socket_t(*ctx->sock_context, zmq::socket_type::pull);
@@ -20372,6 +20411,7 @@ void llama_init_sockets(struct llama_context * ctx, uint32_t n_world, uint32_t m
     }
 
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
+#endif
 }
 
 int llama_gather_device_info(struct llama_context * ctx, struct device_info * dev_info_set) {
@@ -20381,7 +20421,12 @@ int llama_gather_device_info(struct llama_context * ctx, struct device_info * de
     }
 
     GGML_ASSERT(dev_info_set != nullptr);
-    GGML_ASSERT(ctx != nullptr && ctx->send_socket != nullptr);
+    GGML_ASSERT(ctx != nullptr);
+
+#ifdef USE_NDN_INSTEAD_OF_ZMQ
+    return llama_gather_device_info_ndn(ctx, dev_info_set);
+#else
+    GGML_ASSERT(ctx->send_socket != nullptr);
     try {
         char * buffer = nullptr;
         size_t buffer_size = serialize(&dev_info_set[0], &buffer);
@@ -20406,16 +20451,22 @@ int llama_gather_device_info(struct llama_context * ctx, struct device_info * de
         deserialize((const char *)recv_msgs[i].data(), &dev_info_set[i]);
     }
     return 0;
+#endif
 }
 
 int llama_send_device_info(struct llama_context * ctx, struct device_info * dev_info) {
+    GGML_ASSERT(dev_info != nullptr);
+    GGML_ASSERT(ctx != nullptr);
+
+#ifdef USE_NDN_INSTEAD_OF_ZMQ
+    return llama_send_device_info_ndn(ctx, dev_info);
+#else
     std::vector<zmq::message_t> recv_msgs;
     if (!zmq::recv_multipart(*ctx->recv_socket, std::back_inserter(recv_msgs))) {
         return -1;
     }
 
-    GGML_ASSERT(dev_info != nullptr);
-    GGML_ASSERT(ctx != nullptr && ctx->send_socket != nullptr);
+    GGML_ASSERT(ctx->send_socket != nullptr);
 
     try {
         char * buffer = nullptr;
@@ -20431,12 +20482,18 @@ int llama_send_device_info(struct llama_context * ctx, struct device_info * dev_
     }
 
     return 0;
+#endif
 }
 
 int llama_bcast_startup_args(llama_context * ctx, uint32_t rank, startup_args * args) {
     int32_t n_world = ctx->cparams.n_world;
     GGML_ASSERT(n_world > 0);
-    GGML_ASSERT(ctx != nullptr && ctx->send_socket != nullptr);
+    GGML_ASSERT(ctx != nullptr);
+
+#ifdef USE_NDN_INSTEAD_OF_ZMQ
+    return llama_bcast_startup_args_ndn(ctx, rank, args);
+#else
+    GGML_ASSERT(ctx->send_socket != nullptr);
 
     if (rank == 0){
         // send
@@ -20482,6 +20539,7 @@ int llama_bcast_startup_args(llama_context * ctx, uint32_t rank, startup_args * 
         }
     }
     return 0;
+#endif
 }
 
 int llama_bcast_layer_setup(struct llama_context * ctx, uint32_t * n_layer_window, uint32_t * n_gpu_layers) {
@@ -20490,7 +20548,12 @@ int llama_bcast_layer_setup(struct llama_context * ctx, uint32_t * n_layer_windo
         return 0;
     }
 
-    GGML_ASSERT(ctx != nullptr && ctx->send_socket != nullptr);
+    GGML_ASSERT(ctx != nullptr);
+
+#ifdef USE_NDN_INSTEAD_OF_ZMQ
+    return llama_bcast_layer_setup_ndn(ctx, n_layer_window, n_gpu_layers);
+#else
+    GGML_ASSERT(ctx->send_socket != nullptr);
     try {
         std::vector<zmq::message_t> send_msgs;
 
@@ -20509,12 +20572,16 @@ int llama_bcast_layer_setup(struct llama_context * ctx, uint32_t * n_layer_windo
     }
 
     return 0;
+#endif
 }
 
 int llama_recv_layer_setup(struct llama_context * ctx, uint32_t * n_layer_window, uint32_t * n_gpu_layers) {
     uint32_t n_world = ctx->cparams.n_world;
     uint32_t my_rank = ctx->cparams.rank;
 
+#ifdef USE_NDN_INSTEAD_OF_ZMQ
+    return llama_recv_layer_setup_ndn(ctx, n_layer_window, n_gpu_layers);
+#else
     std::vector<zmq::message_t> recv_msgs;
     if (!zmq::recv_multipart(*ctx->recv_socket, std::back_inserter(recv_msgs))) {
         return -1;
@@ -20540,16 +20607,21 @@ int llama_recv_layer_setup(struct llama_context * ctx, uint32_t * n_layer_window
     }
     
     return 0;
+#endif
 }
 
 void llama_free_sockets(struct llama_context * ctx, char ** msg) {
     const uint32_t n_world   = ctx->cparams.n_world;
     const uint32_t my_rank   = ctx->cparams.rank;
-    const uint32_t next_rank = (my_rank + 1) % n_world;
 
     if (n_world == 1) {
         return;
     }
+
+#ifdef USE_NDN_INSTEAD_OF_ZMQ
+    llama_free_ndn(ctx, msg);
+#else
+    const uint32_t next_rank = (my_rank + 1) % n_world;
 
     zmq::socket_t signal_sender(*ctx->sock_context, zmq::socket_type::push);
     std::string endp = "tcp://" + ctx->next_node_ip + ":" + std::to_string(map_rank_to_port(next_rank, ctx->signal_port));
@@ -20569,6 +20641,7 @@ void llama_free_sockets(struct llama_context * ctx, char ** msg) {
         *msg = new char[msg_str.size() + 1];
         std::strcpy(*msg, msg_str.c_str());
     }
+#endif
 }
 
 struct llama_context * llama_new_context_with_model(
@@ -22093,6 +22166,9 @@ void llama_kv_cache_clear(struct llama_context * ctx) {
 }
 
 void llama_send_kv_cache_clear(struct llama_context * ctx) {
+#ifdef USE_NDN_INSTEAD_OF_ZMQ
+    llama_send_kv_cache_clear_ndn(ctx);
+#else
     if (ctx->send_socket == nullptr) {
         return;
     }
@@ -22105,6 +22181,7 @@ void llama_send_kv_cache_clear(struct llama_context * ctx) {
     } catch (const zmq::error_t & e) {
         LLAMA_LOG_INFO("Failed to send KV cache clear signal: %s\n", e.what());
     }
+#endif
 }
 
 bool llama_kv_cache_seq_rm(struct llama_context * ctx, llama_seq_id seq_id, llama_pos p0, llama_pos p1) {
@@ -22112,6 +22189,9 @@ bool llama_kv_cache_seq_rm(struct llama_context * ctx, llama_seq_id seq_id, llam
 }
 
 void llama_send_kv_cache_seq_rm(struct llama_context * ctx, llama_seq_id seq_id, llama_pos p0, llama_pos p1) {
+#ifdef USE_NDN_INSTEAD_OF_ZMQ
+    llama_send_kv_cache_seq_rm_ndn(ctx, seq_id, p0, p1);
+#else
     if (ctx->send_socket == nullptr) {
         return;
     }
@@ -22126,6 +22206,7 @@ void llama_send_kv_cache_seq_rm(struct llama_context * ctx, llama_seq_id seq_id,
     } catch (const zmq::error_t & e) {
         LLAMA_LOG_WARN("Failed to send kv_seq_rm: %s\n", e.what());
     }
+#endif
 }
 
 void llama_kv_cache_seq_cp(struct llama_context * ctx, llama_seq_id seq_id_src, llama_seq_id seq_id_dst, llama_pos p0, llama_pos p1) {
@@ -22136,6 +22217,9 @@ void llama_kv_cache_seq_cp(struct llama_context * ctx, llama_seq_id seq_id_src, 
 }
 
 void llama_send_kv_cache_seq_cp(struct llama_context * ctx, llama_seq_id seq_id_src, llama_seq_id seq_id_dst, llama_pos p0, llama_pos p1) {
+#ifdef USE_NDN_INSTEAD_OF_ZMQ
+    llama_send_kv_cache_seq_cp_ndn(ctx, seq_id_src, seq_id_dst, p0, p1);
+#else
     if (ctx->send_socket == nullptr) {
         return;
     }
@@ -22151,6 +22235,7 @@ void llama_send_kv_cache_seq_cp(struct llama_context * ctx, llama_seq_id seq_id_
     } catch (const zmq::error_t & e) {
         LLAMA_LOG_WARN("Failed to send kv_seq_cp: %s\n", e.what());
     }
+#endif
 }
 
 void llama_kv_cache_seq_keep(struct llama_context * ctx, llama_seq_id seq_id) {
@@ -22166,6 +22251,9 @@ void llama_kv_cache_seq_add(struct llama_context * ctx, llama_seq_id seq_id, lla
 }
 
 void llama_send_kv_cache_seq_add(struct llama_context * ctx, llama_seq_id seq_id, llama_pos p0, llama_pos p1, llama_pos delta) {
+#ifdef USE_NDN_INSTEAD_OF_ZMQ
+    llama_send_kv_cache_seq_add_ndn(ctx, seq_id, p0, p1, delta);
+#else
     if (ctx->send_socket == nullptr) {
         return;
     }
@@ -22181,6 +22269,7 @@ void llama_send_kv_cache_seq_add(struct llama_context * ctx, llama_seq_id seq_id
     } catch (const zmq::error_t & e) {
         LLAMA_LOG_WARN("Failed to send kv_seq_add: %s\n", e.what());
     }
+#endif
 }
 
 void llama_kv_cache_seq_div(struct llama_context * ctx, llama_seq_id seq_id, llama_pos p0, llama_pos p1, int d) {
@@ -22192,6 +22281,9 @@ void llama_kv_cache_seq_div(struct llama_context * ctx, llama_seq_id seq_id, lla
 }
 
 void llama_send_kv_cache_seq_div(struct llama_context * ctx, llama_seq_id seq_id, llama_pos p0, llama_pos p1, int d) {
+#ifdef USE_NDN_INSTEAD_OF_ZMQ
+    llama_send_kv_cache_seq_div_ndn(ctx, seq_id, p0, p1, d);
+#else
     if (ctx->send_socket == nullptr) {
         return;
     }
@@ -22207,6 +22299,7 @@ void llama_send_kv_cache_seq_div(struct llama_context * ctx, llama_seq_id seq_id
     } catch (const zmq::error_t & e) {
         LLAMA_LOG_WARN("Failed to send kv_seq_div: %s\n", e.what());
     }
+#endif
 }
 
 llama_pos llama_kv_cache_seq_pos_max(struct llama_context * ctx, llama_seq_id seq_id) {

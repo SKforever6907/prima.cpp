@@ -73,6 +73,9 @@ option(LLAMA_BUILD_SERVER   "llama: build server example" ${LLAMA_STANDALONE})
 # 3rd party libs
 option(LLAMA_CURL "llama: use libcurl to download model from an URL" OFF)
 
+# NDN support
+option(LLAMA_NDN "llama: use NDN instead of ZeroMQ for distributed inference" OFF)
+
 # Required for relocatable CMake package
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/build-info.cmake)
 
@@ -110,6 +113,33 @@ llama_option_depr(WARNING     LLAMA_RPC                 GGML_RPC)
 llama_option_depr(WARNING     LLAMA_SYCL                GGML_SYCL)
 llama_option_depr(WARNING     LLAMA_SYCL_F16            GGML_SYCL_F16)
 llama_option_depr(WARNING     LLAMA_CANN                GGML_CANN)
+
+# NDN configuration
+if (LLAMA_NDN)
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(NDN_CXX REQUIRED libndn-cxx)
+    
+    if (NDN_CXX_FOUND)
+        message(STATUS "NDN-CXX found: ${NDN_CXX_VERSION}")
+        add_compile_definitions(USE_NDN_INSTEAD_OF_ZMQ)
+        
+        # Add NDN include directories
+        include_directories(${NDN_CXX_INCLUDE_DIRS})
+        
+        # Add NDN compile flags
+        add_compile_options(${NDN_CXX_CFLAGS_OTHER})
+        
+        # Store NDN libraries for linking
+        set(LLAMA_NDN_LIBRARIES ${NDN_CXX_LIBRARIES})
+        set(LLAMA_NDN_LIBRARY_DIRS ${NDN_CXX_LIBRARY_DIRS})
+        
+        message(STATUS "NDN support enabled")
+    else()
+        message(FATAL_ERROR "NDN-CXX library not found. Please install libndn-cxx-dev or build from source.")
+    endif()
+else()
+    message(STATUS "NDN support disabled (using ZeroMQ)")
+endif()
 
 #
 # build the library
