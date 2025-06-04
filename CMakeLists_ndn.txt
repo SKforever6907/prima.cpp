@@ -20,12 +20,12 @@ find_package(Threads REQUIRED)
 
 # 包含目录
 include_directories(${NDN_CXX_INCLUDE_DIRS})
-include_directories(include)
-include_directories(common)
-include_directories(src)
-include_directories(ggml/include)
-include_directories(ggml/src)
-include_directories(.)
+include_directories(../include)
+include_directories(../common)
+include_directories(../src)
+include_directories(../ggml/include)
+include_directories(../ggml/src)
+include_directories(..)
 
 # 编译选项
 add_compile_options(${NDN_CXX_CFLAGS_OTHER})
@@ -48,34 +48,34 @@ configure_file(
 
 # GGML源文件
 set(GGML_SOURCES
-    ggml/src/ggml.c
-    ggml/src/ggml-alloc.c
-    ggml/src/ggml-backend.cpp
-    ggml/src/ggml-quants.c
-    ggml/src/llamafile/sgemm.cpp
+    ../ggml/src/ggml.c
+    ../ggml/src/ggml-alloc.c
+    ../ggml/src/ggml-backend.cpp
+    ../ggml/src/ggml-quants.c
+    ../ggml/src/llamafile/sgemm.cpp
 )
 
 # 源文件
 set(PRIMA_SOURCES
-    src/llama.cpp
-    src/llama-vocab.cpp
-    src/llama-grammar.cpp
-    src/llama-sampling.cpp
-    common/common.cpp
-    common/arg.cpp
-    common/log.cpp
-    common/console.cpp
-    common/ngram-cache.cpp
-    common/sampling.cpp
-    common/train.cpp
-    common/profiler.cpp
+    ../src/llama.cpp
+    ../src/llama-vocab.cpp
+    ../src/llama-grammar.cpp
+    ../src/llama-sampling.cpp
+    ../common/common.cpp
+    ../common/arg.cpp
+    ../common/log.cpp
+    ../common/console.cpp
+    ../common/ngram-cache.cpp
+    ../common/sampling.cpp
+    ../common/train.cpp
+    ../common/profiler.cpp
     # JSON schema to grammar support
-    common/json-schema-to-grammar.cpp
+    ../common/json-schema-to-grammar.cpp
     # 添加NDN实现文件
-    src/ndn-prima.cpp  # 新的NDN实现文件
+    ../src/ndn-prima.cpp  # 新的NDN实现文件
     # Unicode支持文件
-    src/unicode.cpp
-    src/unicode-data.cpp
+    ../src/unicode.cpp
+    ../src/unicode-data.cpp
     # 构建信息文件
     ${CMAKE_CURRENT_BINARY_DIR}/build-info.cpp
     ${GGML_SOURCES}
@@ -94,7 +94,7 @@ target_link_libraries(prima-ndn
 target_link_directories(prima-ndn PRIVATE ${NDN_CXX_LIBRARY_DIRS})
 
 # 主程序
-add_executable(prima-main-ndn examples/main/main.cpp)
+add_executable(prima-main-ndn ../examples/main/main.cpp)
 target_link_libraries(prima-main-ndn prima-ndn)
 
 # NDN-CXX安装说明 (已注释，假设已安装)
