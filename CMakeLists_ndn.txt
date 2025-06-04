@@ -27,6 +27,9 @@ add_compile_options(${NDN_CXX_CFLAGS_OTHER})
 # 定义宏来启用NDN支持
 add_definitions(-DUSE_NDN_INSTEAD_OF_ZMQ)
 
+# 添加Linux CPU亲和性支持
+add_definitions(-D_GNU_SOURCE)
+
 # 包含构建信息处理
 include(cmake/build-info.cmake)
 
@@ -60,6 +63,8 @@ set(PRIMA_SOURCES
     common/sampling.cpp
     common/train.cpp
     common/profiler.cpp
+    # JSON schema to grammar support
+    common/json-schema-to-grammar.cpp
     # 添加NDN实现文件
     src/ndn-prima.cpp  # 新的NDN实现文件
     # Unicode支持文件
