@@ -20400,19 +20400,26 @@ static uint32_t map_rank_to_port(uint32_t rank, uint32_t data_port) {
 // NDN helper functions moved inline to avoid redefinition
 
 void llama_init_sockets(struct llama_context * ctx, uint32_t n_world, uint32_t my_rank) {
+    std::cout << "🚀 llama_init_sockets called with n_world=" << n_world << ", my_rank=" << my_rank << std::endl;
+    
     if (n_world == 1) {
+        std::cout << "⚠️  Single node mode (n_world=1), skipping socket initialization" << std::endl;
         return; 
     }
 
 #ifdef USE_NDN_INSTEAD_OF_ZMQ
+    std::cout << "✅ Using NDN instead of ZMQ for distributed communication" << std::endl;
+    
     // Initialize NDN context
     ctx->ndn_ctx = new ndn_prima::ndn_context();
     ctx->ndn_ctx->rank = my_rank;
     ctx->ndn_ctx->n_world = n_world;
     
+    std::cout << "📡 Starting NDN Face processing..." << std::endl;
     // Start NDN Face processing
     ctx->ndn_ctx->start();
     
+    std::cout << "🔧 Setting up NDN Interest filters..." << std::endl;
     // Setup Interest filters
     ndn_prima::setup_meta_interest_filter(ctx->ndn_ctx);
     ndn_prima::setup_tensor_interest_filter(ctx->ndn_ctx);
@@ -20420,7 +20427,7 @@ void llama_init_sockets(struct llama_context * ctx, uint32_t n_world, uint32_t m
     ndn_prima::setup_broadcast_interest_filter(ctx->ndn_ctx);
     ndn_prima::setup_kv_cache_interest_filters(ctx->ndn_ctx);
     
-    std::cout << "NDN context initialized for rank " << my_rank << " in world of " << n_world << std::endl;
+    std::cout << "🎉 NDN context initialized successfully for rank " << my_rank << " in world of " << n_world << std::endl;
 #else
     ctx->sock_context  = new zmq::context_t(2); 
     ctx->send_socket   = new zmq::socket_t(*ctx->sock_context, zmq::socket_type::push);

@@ -1601,7 +1601,9 @@ struct llama_init_result llama_init_from_gpt_params(gpt_params & params) {
     } else {
         uint32_t n_layer_window[32] = {0}, n_gpu_layers[32] = {0};
 
+        std::cout << "🌐 Distributed mode detected (n_world=" << n_world << ", my_rank=" << my_rank << ")" << std::endl;
         // initialize sockets
+        std::cout << "🔌 Calling llama_init_sockets..." << std::endl;
         llama_init_sockets(lctx, n_world, my_rank);
 
         // broadcast startup args
