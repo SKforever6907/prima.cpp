@@ -17,34 +17,12 @@ include_directories(${NDN_CXX_INCLUDE_DIRS})
 include_directories(include)
 include_directories(common)
 include_directories(src)
-include_directories(ggml/include)
-include_directories(ggml/src)
-include_directories(.)
 
 # 编译选项
 add_compile_options(${NDN_CXX_CFLAGS_OTHER})
 
 # 定义宏来启用NDN支持
 add_definitions(-DUSE_NDN_INSTEAD_OF_ZMQ)
-
-# 包含构建信息处理
-include(cmake/build-info.cmake)
-
-# 生成构建信息文件
-configure_file(
-    ${CMAKE_CURRENT_SOURCE_DIR}/common/build-info.cpp.in
-    ${CMAKE_CURRENT_BINARY_DIR}/build-info.cpp
-    @ONLY
-)
-
-# GGML源文件
-set(GGML_SOURCES
-    ggml/src/ggml.c
-    ggml/src/ggml-alloc.c
-    ggml/src/ggml-backend.cpp
-    ggml/src/ggml-quants.c
-    ggml/src/llamafile/sgemm.cpp
-)
 
 # 源文件
 set(PRIMA_SOURCES
@@ -62,12 +40,6 @@ set(PRIMA_SOURCES
     common/profiler.cpp
     # 添加NDN实现文件
     src/ndn-prima.cpp  # 新的NDN实现文件
-    # Unicode支持文件
-    src/unicode.cpp
-    src/unicode-data.cpp
-    # 构建信息文件
-    ${CMAKE_CURRENT_BINARY_DIR}/build-info.cpp
-    ${GGML_SOURCES}
 )
 
 # 创建库

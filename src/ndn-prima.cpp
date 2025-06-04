@@ -1,8 +1,8 @@
 // NDN implementation for prima.cpp distributed inference
 // Replaces ZeroMQ with Named Data Networking
 
-#include "ndn_prima.h"
 #include "llama-impl.h"
+#include "ndn_prima.h"
 #include <iostream>
 #include <sstream>
 #include <cstring>
@@ -13,9 +13,52 @@
 
 namespace ndn_prima {
 
+// 序列化函数实现
+void serialize_device_info_to_buffer(const device_info* dev_info, std::ostringstream& os) {
+    if (!dev_info) return;
+    
+    // 简单的二进制序列化 - 使用实际的结构体字段
+    os.write(reinterpret_cast<const char*>(&dev_info->rank), sizeof(dev_info->rank));
+    // 注意：字符串指针需要特殊处理，这里简化处理
+    size_t name_len = dev_info->device_name ? strlen(dev_info->device_name) : 0;
+    os.write(reinterpret_cast<const char*>(&name_len), sizeof(name_len));
+    if (name_len > 0) {
+        os.write(dev_info->device_name, name_len);
+    }
+    
+    size_t os_len = dev_info->device_os ? strlen(dev_info->device_os) : 0;
+    os.write(reinterpret_cast<const char*>(&os_len), sizeof(os_len));
+    if (os_len > 0) {
+        os.write(dev_info->device_os, os_len);
+    }
+}
+
+void serialize_startup_args_to_buffer(const startup_args* args, std::ostringstream& os) {
+    if (!args) return;
+    
+    // 简单的二进制序列化 - 使用实际的结构体字段
+    os.write(reinterpret_cast<const char*>(&args->should_profile), sizeof(args->should_profile));
+    os.write(reinterpret_cast<const char*>(&args->n_ctx), sizeof(args->n_ctx));
+}
+
+void deserialize_device_info_from_buffer(const uint8_t* buffer, size_t size, device_info* dev_info) {
+    if (!buffer || !dev_info || size < sizeof(uint32_t)) return;
+    
+    // 简单的二进制反序列化
+    const char* data = reinterpret_cast<const char*>(buffer);
+    size_t offset = 0;
+    
+    memcpy(&dev_info->rank, data + offset, sizeof(dev_info->rank));
+    offset += sizeof(dev_info->rank);
+    
+    // 简化处理：设置默认值而不是反序列化字符串
+    dev_info->device_name = "unknown";
+    dev_info->device_os = "unknown";
+}
+
 // NDN Context Implementation
 ndn_context::ndn_context(const std::string& prefix) 
-    : scheduler(face.getIoService()), prefix_base(prefix) {
+    : scheduler(face.getIoContext()), prefix_base(prefix) {
     session_id = std::chrono::duration_cast<std::chrono::seconds>(
         std::chrono::system_clock::now().time_since_epoch()).count();
 }
@@ -149,39 +192,43 @@ std::string build_kv_cache_name(const ndn_context* ctx, const std::string& opera
 }
 
 // Serialization functions
-void serialize_meta_to_buffer(const struct sync_meta* meta, ndn::encoding::BufferStream& os) {
+void serialize_meta_to_buffer(const struct sync_meta* meta, std::ostringstream& os) {
     // Write sync_meta fields in order
     os.write(reinterpret_cast<const char*>(&meta->n_tokens), sizeof(meta->n_tokens));
     os.write(reinterpret_cast<const char*>(&meta->all_pos_0), sizeof(meta->all_pos_0));
     os.write(reinterpret_cast<const char*>(&meta->all_pos_1), sizeof(meta->all_pos_1));
-    os.write(reinterpret_cast<const char*>(&meta->seq_id), sizeof(meta->seq_id));
-    os.write(reinterpret_cast<const char*>(&meta->kv_cache_clear), sizeof(meta->kv_cache_clear));
-    os.write(reinterpret_cast<const char*>(&meta->kv_cache_seq_rm_n), sizeof(meta->kv_cache_seq_rm_n));
+    os.write(reinterpret_cast<const char*>(&meta->n_ctx), sizeof(meta->n_ctx));
     
-    // Write variable-length arrays
-    for (int i = 0; i < meta->kv_cache_seq_rm_n; ++i) {
-        os.write(reinterpret_cast<const char*>(&meta->kv_cache_seq_rm[i]), sizeof(meta->kv_cache_seq_rm[i]));
-    }
+    // Write boolean flags
+    os.write(reinterpret_cast<const char*>(&meta->clear_kv_cache), sizeof(meta->clear_kv_cache));
+    os.write(reinterpret_cast<const char*>(&meta->kv_seq_rm), sizeof(meta->kv_seq_rm));
+    os.write(reinterpret_cast<const char*>(&meta->rm_seq_id), sizeof(meta->rm_seq_id));
+    os.write(reinterpret_cast<const char*>(&meta->rm_p0), sizeof(meta->rm_p0));
+    os.write(reinterpret_cast<const char*>(&meta->rm_p1), sizeof(meta->rm_p1));
     
-    os.write(reinterpret_cast<const char*>(&meta->kv_cache_seq_cp_n), sizeof(meta->kv_cache_seq_cp_n));
-    for (int i = 0; i < meta->kv_cache_seq_cp_n; ++i) {
-        os.write(reinterpret_cast<const char*>(&meta->kv_cache_seq_cp[i]), sizeof(meta->kv_cache_seq_cp[i]));
-    }
+    os.write(reinterpret_cast<const char*>(&meta->kv_seq_add), sizeof(meta->kv_seq_add));
+    os.write(reinterpret_cast<const char*>(&meta->add_seq_id), sizeof(meta->add_seq_id));
+    os.write(reinterpret_cast<const char*>(&meta->add_p0), sizeof(meta->add_p0));
+    os.write(reinterpret_cast<const char*>(&meta->add_p1), sizeof(meta->add_p1));
+    os.write(reinterpret_cast<const char*>(&meta->add_delta), sizeof(meta->add_delta));
     
-    os.write(reinterpret_cast<const char*>(&meta->kv_cache_seq_add_n), sizeof(meta->kv_cache_seq_add_n));
-    for (int i = 0; i < meta->kv_cache_seq_add_n; ++i) {
-        os.write(reinterpret_cast<const char*>(&meta->kv_cache_seq_add[i]), sizeof(meta->kv_cache_seq_add[i]));
-    }
+    os.write(reinterpret_cast<const char*>(&meta->kv_seq_cp), sizeof(meta->kv_seq_cp));
+    os.write(reinterpret_cast<const char*>(&meta->cp_src_seq_id), sizeof(meta->cp_src_seq_id));
+    os.write(reinterpret_cast<const char*>(&meta->cp_dst_seq_id), sizeof(meta->cp_dst_seq_id));
+    os.write(reinterpret_cast<const char*>(&meta->cp_p0), sizeof(meta->cp_p0));
+    os.write(reinterpret_cast<const char*>(&meta->cp_p1), sizeof(meta->cp_p1));
     
-    os.write(reinterpret_cast<const char*>(&meta->kv_cache_seq_div_n), sizeof(meta->kv_cache_seq_div_n));
-    for (int i = 0; i < meta->kv_cache_seq_div_n; ++i) {
-        os.write(reinterpret_cast<const char*>(&meta->kv_cache_seq_div[i]), sizeof(meta->kv_cache_seq_div[i]));
-    }
+    os.write(reinterpret_cast<const char*>(&meta->kv_seq_div), sizeof(meta->kv_seq_div));
+    os.write(reinterpret_cast<const char*>(&meta->div_seq_id), sizeof(meta->div_seq_id));
+    os.write(reinterpret_cast<const char*>(&meta->div_p0), sizeof(meta->div_p0));
+    os.write(reinterpret_cast<const char*>(&meta->div_p1), sizeof(meta->div_p1));
+    os.write(reinterpret_cast<const char*>(&meta->div_factor), sizeof(meta->div_factor));
 }
 
 void deserialize_meta_from_buffer(const uint8_t* data, size_t size, struct sync_meta* meta) {
     size_t offset = 0;
     
+    // Read basic fields
     if (offset + sizeof(meta->n_tokens) > size) return;
     std::memcpy(&meta->n_tokens, data + offset, sizeof(meta->n_tokens));
     offset += sizeof(meta->n_tokens);
@@ -194,124 +241,96 @@ void deserialize_meta_from_buffer(const uint8_t* data, size_t size, struct sync_
     std::memcpy(&meta->all_pos_1, data + offset, sizeof(meta->all_pos_1));
     offset += sizeof(meta->all_pos_1);
     
-    if (offset + sizeof(meta->seq_id) > size) return;
-    std::memcpy(&meta->seq_id, data + offset, sizeof(meta->seq_id));
-    offset += sizeof(meta->seq_id);
+    if (offset + sizeof(meta->n_ctx) > size) return;
+    std::memcpy(&meta->n_ctx, data + offset, sizeof(meta->n_ctx));
+    offset += sizeof(meta->n_ctx);
     
-    if (offset + sizeof(meta->kv_cache_clear) > size) return;
-    std::memcpy(&meta->kv_cache_clear, data + offset, sizeof(meta->kv_cache_clear));
-    offset += sizeof(meta->kv_cache_clear);
+    // Read boolean flags and related data
+    if (offset + sizeof(meta->clear_kv_cache) > size) return;
+    std::memcpy(&meta->clear_kv_cache, data + offset, sizeof(meta->clear_kv_cache));
+    offset += sizeof(meta->clear_kv_cache);
     
-    if (offset + sizeof(meta->kv_cache_seq_rm_n) > size) return;
-    std::memcpy(&meta->kv_cache_seq_rm_n, data + offset, sizeof(meta->kv_cache_seq_rm_n));
-    offset += sizeof(meta->kv_cache_seq_rm_n);
+    if (offset + sizeof(meta->kv_seq_rm) > size) return;
+    std::memcpy(&meta->kv_seq_rm, data + offset, sizeof(meta->kv_seq_rm));
+    offset += sizeof(meta->kv_seq_rm);
     
-    // Read variable-length arrays
-    for (int i = 0; i < meta->kv_cache_seq_rm_n && i < LLAMA_MAX_SEQ_RM; ++i) {
-        if (offset + sizeof(meta->kv_cache_seq_rm[i]) > size) return;
-        std::memcpy(&meta->kv_cache_seq_rm[i], data + offset, sizeof(meta->kv_cache_seq_rm[i]));
-        offset += sizeof(meta->kv_cache_seq_rm[i]);
-    }
+    if (offset + sizeof(meta->rm_seq_id) > size) return;
+    std::memcpy(&meta->rm_seq_id, data + offset, sizeof(meta->rm_seq_id));
+    offset += sizeof(meta->rm_seq_id);
     
-    if (offset + sizeof(meta->kv_cache_seq_cp_n) > size) return;
-    std::memcpy(&meta->kv_cache_seq_cp_n, data + offset, sizeof(meta->kv_cache_seq_cp_n));
-    offset += sizeof(meta->kv_cache_seq_cp_n);
+    if (offset + sizeof(meta->rm_p0) > size) return;
+    std::memcpy(&meta->rm_p0, data + offset, sizeof(meta->rm_p0));
+    offset += sizeof(meta->rm_p0);
     
-    for (int i = 0; i < meta->kv_cache_seq_cp_n && i < LLAMA_MAX_SEQ_CP; ++i) {
-        if (offset + sizeof(meta->kv_cache_seq_cp[i]) > size) return;
-        std::memcpy(&meta->kv_cache_seq_cp[i], data + offset, sizeof(meta->kv_cache_seq_cp[i]));
-        offset += sizeof(meta->kv_cache_seq_cp[i]);
-    }
+    if (offset + sizeof(meta->rm_p1) > size) return;
+    std::memcpy(&meta->rm_p1, data + offset, sizeof(meta->rm_p1));
+    offset += sizeof(meta->rm_p1);
     
-    if (offset + sizeof(meta->kv_cache_seq_add_n) > size) return;
-    std::memcpy(&meta->kv_cache_seq_add_n, data + offset, sizeof(meta->kv_cache_seq_add_n));
-    offset += sizeof(meta->kv_cache_seq_add_n);
+    if (offset + sizeof(meta->kv_seq_add) > size) return;
+    std::memcpy(&meta->kv_seq_add, data + offset, sizeof(meta->kv_seq_add));
+    offset += sizeof(meta->kv_seq_add);
     
-    for (int i = 0; i < meta->kv_cache_seq_add_n && i < LLAMA_MAX_SEQ_ADD; ++i) {
-        if (offset + sizeof(meta->kv_cache_seq_add[i]) > size) return;
-        std::memcpy(&meta->kv_cache_seq_add[i], data + offset, sizeof(meta->kv_cache_seq_add[i]));
-        offset += sizeof(meta->kv_cache_seq_add[i]);
-    }
+    if (offset + sizeof(meta->add_seq_id) > size) return;
+    std::memcpy(&meta->add_seq_id, data + offset, sizeof(meta->add_seq_id));
+    offset += sizeof(meta->add_seq_id);
     
-    if (offset + sizeof(meta->kv_cache_seq_div_n) > size) return;
-    std::memcpy(&meta->kv_cache_seq_div_n, data + offset, sizeof(meta->kv_cache_seq_div_n));
-    offset += sizeof(meta->kv_cache_seq_div_n);
+    if (offset + sizeof(meta->add_p0) > size) return;
+    std::memcpy(&meta->add_p0, data + offset, sizeof(meta->add_p0));
+    offset += sizeof(meta->add_p0);
     
-    for (int i = 0; i < meta->kv_cache_seq_div_n && i < LLAMA_MAX_SEQ_DIV; ++i) {
-        if (offset + sizeof(meta->kv_cache_seq_div[i]) > size) return;
-        std::memcpy(&meta->kv_cache_seq_div[i], data + offset, sizeof(meta->kv_cache_seq_div[i]));
-        offset += sizeof(meta->kv_cache_seq_div[i]);
-    }
+    if (offset + sizeof(meta->add_p1) > size) return;
+    std::memcpy(&meta->add_p1, data + offset, sizeof(meta->add_p1));
+    offset += sizeof(meta->add_p1);
+    
+    if (offset + sizeof(meta->add_delta) > size) return;
+    std::memcpy(&meta->add_delta, data + offset, sizeof(meta->add_delta));
+    offset += sizeof(meta->add_delta);
+    
+    if (offset + sizeof(meta->kv_seq_cp) > size) return;
+    std::memcpy(&meta->kv_seq_cp, data + offset, sizeof(meta->kv_seq_cp));
+    offset += sizeof(meta->kv_seq_cp);
+    
+    if (offset + sizeof(meta->cp_src_seq_id) > size) return;
+    std::memcpy(&meta->cp_src_seq_id, data + offset, sizeof(meta->cp_src_seq_id));
+    offset += sizeof(meta->cp_src_seq_id);
+    
+    if (offset + sizeof(meta->cp_dst_seq_id) > size) return;
+    std::memcpy(&meta->cp_dst_seq_id, data + offset, sizeof(meta->cp_dst_seq_id));
+    offset += sizeof(meta->cp_dst_seq_id);
+    
+    if (offset + sizeof(meta->cp_p0) > size) return;
+    std::memcpy(&meta->cp_p0, data + offset, sizeof(meta->cp_p0));
+    offset += sizeof(meta->cp_p0);
+    
+    if (offset + sizeof(meta->cp_p1) > size) return;
+    std::memcpy(&meta->cp_p1, data + offset, sizeof(meta->cp_p1));
+    offset += sizeof(meta->cp_p1);
+    
+    if (offset + sizeof(meta->kv_seq_div) > size) return;
+    std::memcpy(&meta->kv_seq_div, data + offset, sizeof(meta->kv_seq_div));
+    offset += sizeof(meta->kv_seq_div);
+    
+    if (offset + sizeof(meta->div_seq_id) > size) return;
+    std::memcpy(&meta->div_seq_id, data + offset, sizeof(meta->div_seq_id));
+    offset += sizeof(meta->div_seq_id);
+    
+    if (offset + sizeof(meta->div_p0) > size) return;
+    std::memcpy(&meta->div_p0, data + offset, sizeof(meta->div_p0));
+    offset += sizeof(meta->div_p0);
+    
+    if (offset + sizeof(meta->div_p1) > size) return;
+    std::memcpy(&meta->div_p1, data + offset, sizeof(meta->div_p1));
+    offset += sizeof(meta->div_p1);
+    
+    if (offset + sizeof(meta->div_factor) > size) return;
+    std::memcpy(&meta->div_factor, data + offset, sizeof(meta->div_factor));
+    offset += sizeof(meta->div_factor);
 }
 
-void serialize_device_info_to_buffer(const struct device_info* info, ndn::encoding::BufferStream& os) {
-    os.write(reinterpret_cast<const char*>(&info->rank), sizeof(info->rank));
-    os.write(reinterpret_cast<const char*>(&info->n_gpu_layers), sizeof(info->n_gpu_layers));
-    os.write(reinterpret_cast<const char*>(&info->n_layer_window), sizeof(info->n_layer_window));
-    os.write(reinterpret_cast<const char*>(&info->memory_total), sizeof(info->memory_total));
-    os.write(reinterpret_cast<const char*>(&info->memory_free), sizeof(info->memory_free));
-    os.write(reinterpret_cast<const char*>(&info->compute_capability), sizeof(info->compute_capability));
-}
+// Device info serialization functions removed - using existing definitions
 
-void deserialize_device_info_from_buffer(const uint8_t* data, size_t size, struct device_info* info) {
-    size_t offset = 0;
-    
-    if (offset + sizeof(info->rank) > size) return;
-    std::memcpy(&info->rank, data + offset, sizeof(info->rank));
-    offset += sizeof(info->rank);
-    
-    if (offset + sizeof(info->n_gpu_layers) > size) return;
-    std::memcpy(&info->n_gpu_layers, data + offset, sizeof(info->n_gpu_layers));
-    offset += sizeof(info->n_gpu_layers);
-    
-    if (offset + sizeof(info->n_layer_window) > size) return;
-    std::memcpy(&info->n_layer_window, data + offset, sizeof(info->n_layer_window));
-    offset += sizeof(info->n_layer_window);
-    
-    if (offset + sizeof(info->memory_total) > size) return;
-    std::memcpy(&info->memory_total, data + offset, sizeof(info->memory_total));
-    offset += sizeof(info->memory_total);
-    
-    if (offset + sizeof(info->memory_free) > size) return;
-    std::memcpy(&info->memory_free, data + offset, sizeof(info->memory_free));
-    offset += sizeof(info->memory_free);
-    
-    if (offset + sizeof(info->compute_capability) > size) return;
-    std::memcpy(&info->compute_capability, data + offset, sizeof(info->compute_capability));
-    offset += sizeof(info->compute_capability);
-}
 
-void serialize_startup_args_to_buffer(const struct startup_args* args, ndn::encoding::BufferStream& os) {
-    os.write(reinterpret_cast<const char*>(&args->n_world), sizeof(args->n_world));
-    os.write(reinterpret_cast<const char*>(&args->n_layer_window), sizeof(args->n_layer_window));
-    os.write(reinterpret_cast<const char*>(&args->n_gpu_layers), sizeof(args->n_gpu_layers));
-    os.write(reinterpret_cast<const char*>(&args->batch_size), sizeof(args->batch_size));
-    os.write(reinterpret_cast<const char*>(&args->ctx_size), sizeof(args->ctx_size));
-}
 
-void deserialize_startup_args_from_buffer(const uint8_t* data, size_t size, struct startup_args* args) {
-    size_t offset = 0;
-    
-    if (offset + sizeof(args->n_world) > size) return;
-    std::memcpy(&args->n_world, data + offset, sizeof(args->n_world));
-    offset += sizeof(args->n_world);
-    
-    if (offset + sizeof(args->n_layer_window) > size) return;
-    std::memcpy(&args->n_layer_window, data + offset, sizeof(args->n_layer_window));
-    offset += sizeof(args->n_layer_window);
-    
-    if (offset + sizeof(args->n_gpu_layers) > size) return;
-    std::memcpy(&args->n_gpu_layers, data + offset, sizeof(args->n_gpu_layers));
-    offset += sizeof(args->n_gpu_layers);
-    
-    if (offset + sizeof(args->batch_size) > size) return;
-    std::memcpy(&args->batch_size, data + offset, sizeof(args->batch_size));
-    offset += sizeof(args->batch_size);
-    
-    if (offset + sizeof(args->ctx_size) > size) return;
-    std::memcpy(&args->ctx_size, data + offset, sizeof(args->ctx_size));
-    offset += sizeof(args->ctx_size);
-}
 
 // Core communication functions
 void send_meta_ndn(ndn_context* ctx, struct sync_meta* meta) {
@@ -324,10 +343,10 @@ void send_meta_ndn(ndn_context* ctx, struct sync_meta* meta) {
     interest.setCanBePrefix(false);
     
     // Serialize meta data
-    ndn::encoding::BufferStream os;
+    std::ostringstream os;
     serialize_meta_to_buffer(meta, os);
-    auto buffer = os.buf();
-    interest.setApplicationParameters(buffer->data(), buffer->size());
+    std::string buffer = os.str();
+    interest.setApplicationParameters(std::string_view(buffer));
     
     // Set operation as pending
     {
@@ -349,7 +368,7 @@ void send_meta_ndn(ndn_context* ctx, struct sync_meta* meta) {
         [ctx, name](const ndn::Interest&, const ndn::lp::Nack& nack) {
             ctx->nacks++;
             std::cerr << "Received NACK for " << name << ": " 
-                     << ndn::lp::getNackReasonString(nack.getReason()) << std::endl;
+                     << static_cast<int>(nack.getReason()) << std::endl;
             {
                 std::lock_guard<std::mutex> lock(ctx->sync_mutex);
                 ctx->pending_operations[name] = false;
@@ -377,14 +396,22 @@ void send_tensor_ndn(ndn_context* ctx, struct llama_ubatch* ubatch, struct input
     interest.setCanBePrefix(false);
     
     // Serialize tensor data (simplified - would need proper tensor serialization)
-    ndn::encoding::BufferStream os;
+    std::ostringstream os;
     // This is a placeholder - actual tensor serialization would be more complex
-    size_t tensor_size = tensors->n_tokens * sizeof(float);
-    os.write(reinterpret_cast<const char*>(&tensor_size), sizeof(tensor_size));
-    os.write(reinterpret_cast<const char*>(tensors->data), tensor_size);
+    // For now, just serialize basic tensor info
+    if (tensors->sub_gf_out) {
+        size_t tensor_size = ggml_nbytes(tensors->sub_gf_out);
+        os.write(reinterpret_cast<const char*>(&tensor_size), sizeof(tensor_size));
+        os.write(reinterpret_cast<const char*>(tensors->sub_gf_out->data), tensor_size);
+    }
+    if (tensors->inp_pos) {
+        size_t tensor_size = ggml_nbytes(tensors->inp_pos);
+        os.write(reinterpret_cast<const char*>(&tensor_size), sizeof(tensor_size));
+        os.write(reinterpret_cast<const char*>(tensors->inp_pos->data), tensor_size);
+    }
     
-    auto buffer = os.buf();
-    interest.setApplicationParameters(buffer->data(), buffer->size());
+    std::string buffer = os.str();
+    interest.setApplicationParameters(std::string_view(buffer));
     
     ctx->interests_sent++;
     
@@ -408,10 +435,10 @@ void send_device_info_ndn(ndn_context* ctx, struct device_info* dev_info) {
     interest.setInterestLifetime(ndn::time::seconds(10));
     interest.setCanBePrefix(false);
     
-    ndn::encoding::BufferStream os;
+    std::ostringstream os;
     serialize_device_info_to_buffer(dev_info, os);
-    auto buffer = os.buf();
-    interest.setApplicationParameters(buffer->data(), buffer->size());
+    std::string buffer = os.str();
+    interest.setApplicationParameters(std::string_view(buffer));
     
     ctx->interests_sent++;
     
@@ -435,10 +462,10 @@ void broadcast_startup_args_ndn(ndn_context* ctx, struct startup_args* args) {
     interest.setInterestLifetime(ndn::time::seconds(15));
     interest.setCanBePrefix(false);
     
-    ndn::encoding::BufferStream os;
+    std::ostringstream os;
     serialize_startup_args_to_buffer(args, os);
-    auto buffer = os.buf();
-    interest.setApplicationParameters(buffer->data(), buffer->size());
+    std::string buffer = os.str();
+    interest.setApplicationParameters(std::string_view(buffer));
     
     ctx->interests_sent++;
     
@@ -650,12 +677,12 @@ void send_kv_cache_seq_rm_ndn(ndn_context* ctx, int seq_id, int p0, int p1) {
     interest.setInterestLifetime(ndn::time::seconds(5));
     
     // Add parameters
-    ndn::encoding::BufferStream os;
+    std::ostringstream os;
     os.write(reinterpret_cast<const char*>(&seq_id), sizeof(seq_id));
     os.write(reinterpret_cast<const char*>(&p0), sizeof(p0));
     os.write(reinterpret_cast<const char*>(&p1), sizeof(p1));
-    auto buffer = os.buf();
-    interest.setApplicationParameters(buffer->data(), buffer->size());
+    std::string buffer = os.str();
+    interest.setApplicationParameters(std::string_view(buffer));
     
     ctx->interests_sent++;
     
@@ -680,13 +707,13 @@ void send_kv_cache_seq_cp_ndn(ndn_context* ctx, int seq_id_src, int seq_id_dst, 
     interest.setInterestLifetime(ndn::time::seconds(5));
     
     // Add parameters
-    ndn::encoding::BufferStream os;
+    std::ostringstream os;
     os.write(reinterpret_cast<const char*>(&seq_id_src), sizeof(seq_id_src));
     os.write(reinterpret_cast<const char*>(&seq_id_dst), sizeof(seq_id_dst));
     os.write(reinterpret_cast<const char*>(&p0), sizeof(p0));
     os.write(reinterpret_cast<const char*>(&p1), sizeof(p1));
-    auto buffer = os.buf();
-    interest.setApplicationParameters(buffer->data(), buffer->size());
+    std::string buffer = os.str();
+    interest.setApplicationParameters(std::string_view(buffer));
     
     ctx->interests_sent++;
     
@@ -711,13 +738,13 @@ void send_kv_cache_seq_add_ndn(ndn_context* ctx, int seq_id, int p0, int p1, int
     interest.setInterestLifetime(ndn::time::seconds(5));
     
     // Add parameters
-    ndn::encoding::BufferStream os;
+    std::ostringstream os;
     os.write(reinterpret_cast<const char*>(&seq_id), sizeof(seq_id));
     os.write(reinterpret_cast<const char*>(&p0), sizeof(p0));
     os.write(reinterpret_cast<const char*>(&p1), sizeof(p1));
     os.write(reinterpret_cast<const char*>(&delta), sizeof(delta));
-    auto buffer = os.buf();
-    interest.setApplicationParameters(buffer->data(), buffer->size());
+    std::string buffer = os.str();
+    interest.setApplicationParameters(std::string_view(buffer));
     
     ctx->interests_sent++;
     
@@ -742,13 +769,13 @@ void send_kv_cache_seq_div_ndn(ndn_context* ctx, int seq_id, int p0, int p1, int
     interest.setInterestLifetime(ndn::time::seconds(5));
     
     // Add parameters
-    ndn::encoding::BufferStream os;
+    std::ostringstream os;
     os.write(reinterpret_cast<const char*>(&seq_id), sizeof(seq_id));
     os.write(reinterpret_cast<const char*>(&p0), sizeof(p0));
     os.write(reinterpret_cast<const char*>(&p1), sizeof(p1));
     os.write(reinterpret_cast<const char*>(&d), sizeof(d));
-    auto buffer = os.buf();
-    interest.setApplicationParameters(buffer->data(), buffer->size());
+    std::string buffer = os.str();
+    interest.setApplicationParameters(std::string_view(buffer));
     
     ctx->interests_sent++;
     
@@ -797,7 +824,7 @@ void handle_interest_timeout(ndn_context* ctx, const std::string& name) {
 
 void handle_nack(ndn_context* ctx, const std::string& name, const ndn::lp::Nack& nack) {
     std::cerr << "Received NACK for " << name << ": " 
-              << ndn::lp::getNackReasonString(nack.getReason()) << std::endl;
+              << static_cast<int>(nack.getReason()) << std::endl;
     ctx->nacks++;
 }
 
@@ -812,117 +839,16 @@ void adjust_interest_lifetime(ndn_context* ctx, const std::string& name_type, in
     // This is a placeholder for adaptive timeout mechanisms
 }
 
+void receive_tensor_ndn(ndn_context* ctx, struct llama_ubatch* ubatch, bool is_out_embd) {
+    // This is a placeholder for receiving tensor data via NDN
+    // In a real implementation, this would wait for tensor data from other nodes
+    // For now, just increment the counter
+    ctx->data_received++;
+}
+
 } // namespace ndn_prima
 
-// C interface implementation
-extern "C" {
-
-void llama_init_ndn(struct llama_context* ctx, uint32_t n_world, uint32_t my_rank) {
-    ctx->ndn_ctx = new ndn_prima::ndn_context();
-    ctx->ndn_ctx->rank = my_rank;
-    ctx->ndn_ctx->n_world = n_world;
-    
-    // Start NDN Face processing
-    ctx->ndn_ctx->start();
-    
-    // Setup Interest filters
-    ndn_prima::setup_meta_interest_filter(ctx->ndn_ctx);
-    ndn_prima::setup_tensor_interest_filter(ctx->ndn_ctx);
-    ndn_prima::setup_device_info_interest_filter(ctx->ndn_ctx);
-    ndn_prima::setup_broadcast_interest_filter(ctx->ndn_ctx);
-    ndn_prima::setup_kv_cache_interest_filters(ctx->ndn_ctx);
-    
-    std::cout << "NDN context initialized for rank " << my_rank << " in world of " << n_world << std::endl;
-}
-
-void llama_free_ndn(struct llama_context* ctx, char** msg) {
-    if (ctx->ndn_ctx) {
-        ctx->ndn_ctx->stop();
-        delete ctx->ndn_ctx;
-        ctx->ndn_ctx = nullptr;
-    }
-    
-    if (msg) {
-        *msg = strdup("NDN context freed");
-    }
-}
-
-int llama_gather_device_info_ndn(struct llama_context* ctx, struct device_info* dev_info_set) {
-    // Gather device info from all nodes
-    // This would involve sending Interests to all other ranks and collecting responses
-    return 0; // Success
-}
-
-int llama_send_device_info_ndn(struct llama_context* ctx, struct device_info* dev_info) {
-    if (!ctx->ndn_ctx) {
-        return -1;
-    }
-    
-    ndn_prima::send_device_info_ndn(ctx->ndn_ctx, dev_info);
-    return 0;
-}
-
-int llama_bcast_startup_args_ndn(struct llama_context* ctx, uint32_t rank, struct startup_args* args) {
-    if (!ctx->ndn_ctx) {
-        return -1;
-    }
-    
-    ndn_prima::broadcast_startup_args_ndn(ctx->ndn_ctx, args);
-    return 0;
-}
-
-int llama_bcast_layer_setup_ndn(struct llama_context* ctx, uint32_t* n_layer_window, uint32_t* n_gpu_layers) {
-    // Broadcast layer setup information
-    return 0;
-}
-
-int llama_recv_layer_setup_ndn(struct llama_context* ctx, uint32_t* n_layer_window, uint32_t* n_gpu_layers) {
-    // Receive layer setup information
-    return 0;
-}
-
-void llama_send_kv_cache_clear_ndn(struct llama_context* ctx) {
-    if (ctx->ndn_ctx) {
-        ndn_prima::send_kv_cache_clear_ndn(ctx->ndn_ctx);
-    }
-}
-
-void llama_send_kv_cache_seq_rm_ndn(struct llama_context* ctx, int seq_id, int p0, int p1) {
-    if (ctx->ndn_ctx) {
-        ndn_prima::send_kv_cache_seq_rm_ndn(ctx->ndn_ctx, seq_id, p0, p1);
-    }
-}
-
-void llama_send_kv_cache_seq_cp_ndn(struct llama_context* ctx, int seq_id_src, int seq_id_dst, int p0, int p1) {
-    if (ctx->ndn_ctx) {
-        ndn_prima::send_kv_cache_seq_cp_ndn(ctx->ndn_ctx, seq_id_src, seq_id_dst, p0, p1);
-    }
-}
-
-void llama_send_kv_cache_seq_add_ndn(struct llama_context* ctx, int seq_id, int p0, int p1, int delta) {
-    if (ctx->ndn_ctx) {
-        ndn_prima::send_kv_cache_seq_add_ndn(ctx->ndn_ctx, seq_id, p0, p1, delta);
-    }
-}
-
-void llama_send_kv_cache_seq_div_ndn(struct llama_context* ctx, int seq_id, int p0, int p1, int d) {
-    if (ctx->ndn_ctx) {
-        ndn_prima::send_kv_cache_seq_div_ndn(ctx->ndn_ctx, seq_id, p0, p1, d);
-    }
-}
-
-void llama_ndn_print_stats(struct llama_context* ctx) {
-    if (ctx->ndn_ctx) {
-        ctx->ndn_ctx->print_stats();
-    }
-}
-
-void llama_ndn_reset_stats(struct llama_context* ctx) {
-    if (ctx->ndn_ctx) {
-        ctx->ndn_ctx->reset_stats();
-    }
-}
-
-} // extern "C"
-
 #endif // USE_NDN_INSTEAD_OF_ZMQ
+
+// C interface implementation moved to llama.cpp to access complete llama_context definition
+

@@ -9,8 +9,9 @@
 #include <ndn-cxx/face.hpp>
 #include <ndn-cxx/security/key-chain.hpp>
 #include <ndn-cxx/util/scheduler.hpp>
-#include <ndn-cxx/encoding/buffer-stream.hpp>
+#include <ndn-cxx/encoding/buffer.hpp>
 #include <ndn-cxx/lp/nack.hpp>
+#include <sstream>
 
 #include <thread>
 #include <atomic>
@@ -22,11 +23,56 @@
 
 // 前向声明
 struct llama_context;
-struct sync_meta;
-struct device_info;
-struct startup_args;
-struct input_tensors;
 struct llama_ubatch;
+
+// 包含必要的结构体定义
+#include "llama-impl.h"
+
+// NDN相关的结构体定义（仅在NDN模式下定义，避免与原始定义冲突）
+#ifdef USE_NDN_INSTEAD_OF_ZMQ
+struct sync_meta {
+    int32_t n_tokens           = 0;
+    llama_pos * pos            = nullptr;
+    llama_pos all_pos_0;
+    llama_pos all_pos_1;
+    uint32_t n_ctx             = 0;
+
+    // signal to clear the kv cache
+    bool clear_kv_cache        = false;
+
+    // signal to remove a kv cache sequence
+    bool kv_seq_rm             = false;
+    llama_seq_id rm_seq_id     = 0;
+    llama_pos    rm_p0         = 0;
+    llama_pos    rm_p1         = 0;
+
+    // signal to add a kv cache sequence
+    bool kv_seq_add            = false;
+    llama_seq_id add_seq_id    = 0;
+    llama_pos    add_p0        = 0;
+    llama_pos    add_p1        = 0;
+    llama_pos    add_delta     = 0;
+
+    // signal to copy a kv cache sequence
+    bool kv_seq_cp             = false;
+    llama_seq_id cp_src_seq_id = 0;
+    llama_seq_id cp_dst_seq_id = 0;
+    llama_pos    cp_p0         = 0;
+    llama_pos    cp_p1         = 0;
+
+    // signal to divide the kv cache range
+    bool kv_seq_div            = false;
+    llama_seq_id div_seq_id    = 0;
+    llama_pos    div_p0        = 0;
+    llama_pos    div_p1        = 0;
+    int          div_factor    = 1;
+};
+
+struct input_tensors {
+    ggml_tensor * sub_gf_out;
+    ggml_tensor * inp_pos;
+};
+#endif
 
 namespace ndn_prima {
 
@@ -108,18 +154,19 @@ std::string build_broadcast_name(const ndn_context* ctx, const std::string& type
 std::string build_kv_cache_name(const ndn_context* ctx, const std::string& operation, uint64_t sequence);
 
 // 序列化/反序列化函数
-void serialize_meta_to_buffer(const struct sync_meta* meta, ndn::encoding::BufferStream& os);
+void serialize_meta_to_buffer(const struct sync_meta* meta, std::ostringstream& os);
 void deserialize_meta_from_buffer(const uint8_t* data, size_t size, struct sync_meta* meta);
 
-void serialize_device_info_to_buffer(const struct device_info* info, ndn::encoding::BufferStream& os);
+void serialize_device_info_to_buffer(const struct device_info* info, std::ostringstream& os);
 void deserialize_device_info_from_buffer(const uint8_t* data, size_t size, struct device_info* info);
 
-void serialize_startup_args_to_buffer(const struct startup_args* args, ndn::encoding::BufferStream& os);
+void serialize_startup_args_to_buffer(const struct startup_args* args, std::ostringstream& os);
 void deserialize_startup_args_from_buffer(const uint8_t* data, size_t size, struct startup_args* args);
 
 // 核心通信函数
 void send_meta_ndn(ndn_context* ctx, struct sync_meta* meta);
 void send_tensor_ndn(ndn_context* ctx, struct llama_ubatch* ubatch, struct input_tensors* tensors);
+void receive_tensor_ndn(ndn_context* ctx, struct llama_ubatch* ubatch, bool is_out_embd);
 void send_device_info_ndn(ndn_context* ctx, struct device_info* dev_info);
 void broadcast_startup_args_ndn(ndn_context* ctx, struct startup_args* args);
 
@@ -154,20 +201,7 @@ void adjust_interest_lifetime(ndn_context* ctx, const std::string& name_type, in
 // C接口函数（替换原有的ZMQ函数）
 extern "C" {
 
-// 初始化和清理
-void llama_init_ndn(struct llama_context* ctx, uint32_t n_world, uint32_t my_rank);
-void llama_free_ndn(struct llama_context* ctx, char** msg);
-
-// 设备信息交换
-int llama_gather_device_info_ndn(struct llama_context* ctx, struct device_info* dev_info_set);
-int llama_send_device_info_ndn(struct llama_context* ctx, struct device_info* dev_info);
-
-// 启动参数广播
-int llama_bcast_startup_args_ndn(struct llama_context* ctx, uint32_t rank, struct startup_args* args);
-
-// 层设置
-int llama_bcast_layer_setup_ndn(struct llama_context* ctx, uint32_t* n_layer_window, uint32_t* n_gpu_layers);
-int llama_recv_layer_setup_ndn(struct llama_context* ctx, uint32_t* n_layer_window, uint32_t* n_gpu_layers);
+// NDN C接口函数已移动到原有ZMQ函数中，通过条件编译实现
 
 // KV缓存同步
 void llama_send_kv_cache_clear_ndn(struct llama_context* ctx);
@@ -182,21 +216,8 @@ void llama_ndn_reset_stats(struct llama_context* ctx);
 
 }
 
-// 宏定义，用于条件编译
-#ifdef USE_NDN_INSTEAD_OF_ZMQ
-#define llama_init_sockets llama_init_ndn
-#define llama_free_sockets llama_free_ndn
-#define llama_gather_device_info llama_gather_device_info_ndn
-#define llama_send_device_info llama_send_device_info_ndn
-#define llama_bcast_startup_args llama_bcast_startup_args_ndn
-#define llama_bcast_layer_setup llama_bcast_layer_setup_ndn
-#define llama_recv_layer_setup llama_recv_layer_setup_ndn
-#define llama_send_kv_cache_clear llama_send_kv_cache_clear_ndn
-#define llama_send_kv_cache_seq_rm llama_send_kv_cache_seq_rm_ndn
-#define llama_send_kv_cache_seq_cp llama_send_kv_cache_seq_cp_ndn
-#define llama_send_kv_cache_seq_add llama_send_kv_cache_seq_add_ndn
-#define llama_send_kv_cache_seq_div llama_send_kv_cache_seq_div_ndn
-#endif
+// 注意：不使用宏定义来避免重复定义问题
+// 而是在原有函数中使用条件编译来调用NDN或ZMQ实现
 
 #else
 // 如果不使用NDN，包含原有的ZMQ头文件

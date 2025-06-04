@@ -1155,6 +1155,18 @@ void quantize_row_q8_0(const float * restrict x, void * restrict vy, int64_t k) 
 #endif
 }
 
+// Fallback implementation for quantize_mat_q8_0 (when ARM-specific version is not available)
+#ifndef __aarch64__
+void quantize_mat_q8_0(const float * restrict x, void * restrict vy, int64_t nrow, int64_t n_per_row, int64_t blck_size_interleave) {
+    // Simple fallback: just call quantize_row_q8_0 for each row
+    GGML_UNUSED(blck_size_interleave);
+    
+    for (int64_t row = 0; row < nrow; row++) {
+        quantize_row_q8_0(x + row * n_per_row, (char*)vy + row * ggml_row_size(GGML_TYPE_Q8_0, n_per_row), n_per_row);
+    }
+}
+#endif
+
 // reference implementation for deterministic creation of model files
 void quantize_row_q8_1_ref(const float * restrict x, block_q8_1 * restrict y, int64_t k) {
     assert(QK8_1 == 32);

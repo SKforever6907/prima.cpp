@@ -1,252 +1,105 @@
-cmake_minimum_required(VERSION 3.14) # for add_link_options and implicit target directories.
-project("llama.cpp" C CXX)
-include(CheckIncludeFileCXX)
+# CMakeLists.txt for NDN version of prima.cpp
+cmake_minimum_required(VERSION 3.12)
+project(prima-ndn)
 
-#set(CMAKE_WARN_DEPRECATED YES)
-set(CMAKE_WARN_UNUSED_CLI YES)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+# 查找NDN-CXX库
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(NDN_CXX REQUIRED libndn-cxx)
 
-if (NOT XCODE AND NOT MSVC AND NOT CMAKE_BUILD_TYPE)
-    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
-    set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS "Debug" "Release" "MinSizeRel" "RelWithDebInfo")
+# 查找其他依赖
+find_package(Threads REQUIRED)
+
+# 包含目录
+include_directories(${NDN_CXX_INCLUDE_DIRS})
+include_directories(include)
+include_directories(common)
+include_directories(src)
+include_directories(ggml/include)
+include_directories(ggml/src)
+include_directories(.)
+
+# 编译选项
+add_compile_options(${NDN_CXX_CFLAGS_OTHER})
+
+# 定义宏来启用NDN支持
+add_definitions(-DUSE_NDN_INSTEAD_OF_ZMQ)
+
+# GGML源文件
+set(GGML_SOURCES
+    ggml/src/ggml.c
+    ggml/src/ggml-alloc.c
+    ggml/src/ggml-backend.cpp
+    ggml/src/ggml-quants.c
+    ggml/src/llamafile/sgemm.cpp
+)
+
+# 源文件
+set(PRIMA_SOURCES
+    src/llama.cpp
+    src/llama-vocab.cpp
+    src/llama-grammar.cpp
+    src/llama-sampling.cpp
+    common/common.cpp
+    common/arg.cpp
+    common/log.cpp
+    common/console.cpp
+    common/ngram-cache.cpp
+    common/sampling.cpp
+    common/train.cpp
+    common/profiler.cpp
+    # 添加NDN实现文件
+    src/ndn-prima.cpp  # 新的NDN实现文件
+    ${GGML_SOURCES}
+)
+
+# 创建库
+add_library(prima-ndn STATIC ${PRIMA_SOURCES})
+
+# 链接库
+target_link_libraries(prima-ndn 
+    ${NDN_CXX_LIBRARIES}
+    Threads::Threads
+)
+
+# 链接目录
+target_link_directories(prima-ndn PRIVATE ${NDN_CXX_LIBRARY_DIRS})
+
+# 主程序
+add_executable(prima-main-ndn examples/main/main.cpp)
+target_link_libraries(prima-main-ndn prima-ndn)
+
+# 安装NDN-CXX的说明
+message(STATUS "")
+message(STATUS "NDN-CXX Installation Instructions:")
+message(STATUS "===================================")
+message(STATUS "Ubuntu/Debian:")
+message(STATUS "  sudo apt-get install libndn-cxx-dev")
+message(STATUS "")
+message(STATUS "From source:")
+message(STATUS "  git clone https://github.com/named-data/ndn-cxx.git")
+message(STATUS "  cd ndn-cxx")
+message(STATUS "  ./waf configure")
+message(STATUS "  ./waf")
+message(STATUS "  sudo ./waf install")
+message(STATUS "")
+message(STATUS "macOS (with Homebrew):")
+message(STATUS "  brew install ndn-cxx")
+message(STATUS "")
+
+# 编译选项
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    target_compile_definitions(prima-ndn PRIVATE DEBUG_NDN)
 endif()
 
-# Add path to modules
-list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake/")
-
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
-
-if (CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
-    set(LLAMA_STANDALONE ON)
-
-    include(git-vars)
-
-    # configure project version
-    # TODO
-else()
-    set(LLAMA_STANDALONE OFF)
+# 性能优化选项
+if(CMAKE_BUILD_TYPE STREQUAL "Release")
+    target_compile_options(prima-ndn PRIVATE -O3 -DNDEBUG)
 endif()
 
-if (EMSCRIPTEN)
-    set(BUILD_SHARED_LIBS_DEFAULT OFF)
-
-    option(LLAMA_WASM_SINGLE_FILE "llama: embed WASM inside the generated llama.js" ON)
-else()
-    if (MINGW)
-        set(BUILD_SHARED_LIBS_DEFAULT OFF)
-    else()
-        set(BUILD_SHARED_LIBS_DEFAULT ON)
-    endif()
-endif()
-
-option(BUILD_SHARED_LIBS "build shared libraries" ${BUILD_SHARED_LIBS_DEFAULT})
-
-if (WIN32)
-    add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
-endif()
-
-#
-# option list
-#
-
-# debug
-option(LLAMA_ALL_WARNINGS           "llama: enable all compiler warnings"                   ON)
-option(LLAMA_ALL_WARNINGS_3RD_PARTY "llama: enable all compiler warnings in 3rd party libs" OFF)
-
-# build
-option(LLAMA_FATAL_WARNINGS "llama: enable -Werror flag" OFF)
-
-# sanitizers
-option(LLAMA_SANITIZE_THREAD    "llama: enable thread sanitizer"    OFF)
-option(LLAMA_SANITIZE_ADDRESS   "llama: enable address sanitizer"   OFF)
-option(LLAMA_SANITIZE_UNDEFINED "llama: enable undefined sanitizer" OFF)
-
-# utils
-option(LLAMA_BUILD_COMMON "llama: build common utils library" ON)
-
-# extra artifacts
-option(LLAMA_BUILD_TESTS    "llama: build tests"          ${LLAMA_STANDALONE})
-option(LLAMA_BUILD_EXAMPLES "llama: build examples"       ${LLAMA_STANDALONE})
-option(LLAMA_BUILD_SERVER   "llama: build server example" ${LLAMA_STANDALONE})
-
-# 3rd party libs
-option(LLAMA_CURL "llama: use libcurl to download model from an URL" OFF)
-
-# NDN support
-option(LLAMA_NDN "llama: use NDN instead of ZeroMQ for distributed inference" OFF)
-
-# Required for relocatable CMake package
-include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/build-info.cmake)
-
-# override ggml options
-set(GGML_SANITIZE_THREAD    ${LLAMA_SANITIZE_THREAD})
-set(GGML_SANITIZE_ADDRESS   ${LLAMA_SANITIZE_ADDRESS})
-set(GGML_SANITIZE_UNDEFINED ${LLAMA_SANITIZE_UNDEFINED})
-set(GGML_ALL_WARNINGS       ${LLAMA_ALL_WARNINGS})
-set(GGML_FATAL_WARNINGS     ${LLAMA_FATAL_WARNINGS})
-
-# change the default for these ggml options
-if (NOT DEFINED GGML_LLAMAFILE)
-    set(GGML_LLAMAFILE_DEFAULT ON)
-endif()
-
-if (NOT DEFINED GGML_CUDA_GRAPHS)
-    set(GGML_CUDA_GRAPHS_DEFAULT ON)
-endif()
-
-# transition helpers
-function (llama_option_depr TYPE OLD NEW)
-    if (${OLD})
-        message(${TYPE} "${OLD} is deprecated and will be removed in the future.\nUse ${NEW} instead\n")
-        set(${NEW} ON PARENT_SCOPE)
-    endif()
-endfunction()
-
-llama_option_depr(FATAL_ERROR LLAMA_CUBLAS              GGML_CUDA)
-llama_option_depr(WARNING     LLAMA_CUDA                GGML_CUDA)
-llama_option_depr(WARNING     LLAMA_KOMPUTE             GGML_KOMPUTE)
-llama_option_depr(WARNING     LLAMA_METAL               GGML_METAL)
-llama_option_depr(WARNING     LLAMA_METAL_EMBED_LIBRARY GGML_METAL_EMBED_LIBRARY)
-llama_option_depr(WARNING     LLAMA_NATIVE              GGML_NATIVE)
-llama_option_depr(WARNING     LLAMA_RPC                 GGML_RPC)
-llama_option_depr(WARNING     LLAMA_SYCL                GGML_SYCL)
-llama_option_depr(WARNING     LLAMA_SYCL_F16            GGML_SYCL_F16)
-llama_option_depr(WARNING     LLAMA_CANN                GGML_CANN)
-
-# NDN configuration
-if (LLAMA_NDN)
-    find_package(PkgConfig REQUIRED)
-    pkg_check_modules(NDN_CXX REQUIRED libndn-cxx)
-    
-    if (NDN_CXX_FOUND)
-        message(STATUS "NDN-CXX found: ${NDN_CXX_VERSION}")
-        add_compile_definitions(USE_NDN_INSTEAD_OF_ZMQ)
-        
-        # Add NDN include directories
-        include_directories(${NDN_CXX_INCLUDE_DIRS})
-        
-        # Add NDN compile flags
-        add_compile_options(${NDN_CXX_CFLAGS_OTHER})
-        
-        # Store NDN libraries for linking
-        set(LLAMA_NDN_LIBRARIES ${NDN_CXX_LIBRARIES})
-        set(LLAMA_NDN_LIBRARY_DIRS ${NDN_CXX_LIBRARY_DIRS})
-        
-        message(STATUS "NDN support enabled")
-    else()
-        message(FATAL_ERROR "NDN-CXX library not found. Please install libndn-cxx-dev or build from source.")
-    endif()
-else()
-    message(STATUS "NDN support disabled (using ZeroMQ)")
-endif()
-
-# Advanced tokenizer API option
-option(LLAMA_TOKENIZER "llama: enable advanced tokenizer API" ON)
-
-if(LLAMA_TOKENIZER)
-    add_compile_definitions(LLAMA_TOKENIZER)
-    message(STATUS "Advanced tokenizer API enabled")
-else()
-    message(STATUS "Advanced tokenizer API disabled")
-endif()
-
-#
-# build the library
-#
-
-if (NOT TARGET ggml)
-    add_subdirectory(ggml)
-    # ... otherwise assume ggml is added by a parent CMakeLists.txt
-endif()
-add_subdirectory(src)
-
-#
-# install
-#
-
-include(GNUInstallDirs)
-include(CMakePackageConfigHelpers)
-
-set(LLAMA_BUILD_NUMBER        ${BUILD_NUMBER})
-set(LLAMA_BUILD_COMMIT        ${BUILD_COMMIT})
-set(LLAMA_INSTALL_VERSION 0.0.${BUILD_NUMBER})
-
-set(LLAMA_INCLUDE_INSTALL_DIR ${CMAKE_INSTALL_INCLUDEDIR} CACHE PATH "Location of header  files")
-set(LLAMA_LIB_INSTALL_DIR     ${CMAKE_INSTALL_LIBDIR}     CACHE PATH "Location of library files")
-set(LLAMA_BIN_INSTALL_DIR     ${CMAKE_INSTALL_BINDIR}     CACHE PATH "Location of binary  files")
-
-
-# At the moment some compile definitions are placed within the ggml/src
-# directory but not exported on the `ggml` target. This could be improved by
-# determining _precisely_ which defines are necessary for the llama-config
-# package.
-#
-set(GGML_TRANSIENT_DEFINES)
-get_target_property(GGML_DIRECTORY ggml SOURCE_DIR)
-get_directory_property(GGML_DIR_DEFINES DIRECTORY ${GGML_DIRECTORY} COMPILE_DEFINITIONS)
-if (GGML_DIR_DEFINES)
-    list(APPEND GGML_TRANSIENT_DEFINES ${GGML_DIR_DEFINES})
-endif()
-get_target_property(GGML_TARGET_DEFINES ggml COMPILE_DEFINITIONS)
-if (GGML_TARGET_DEFINES)
-    list(APPEND GGML_TRANSIENT_DEFINES ${GGML_TARGET_DEFINES})
-endif()
-get_target_property(GGML_LINK_LIBRARIES ggml LINK_LIBRARIES)
-
-set_target_properties(llama PROPERTIES PUBLIC_HEADER ${CMAKE_CURRENT_SOURCE_DIR}/include/llama.h)
-install(TARGETS llama LIBRARY PUBLIC_HEADER)
-
-configure_package_config_file(
-        ${CMAKE_CURRENT_SOURCE_DIR}/cmake/llama-config.cmake.in
-        ${CMAKE_CURRENT_BINARY_DIR}/llama-config.cmake
-    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/llama
-    PATH_VARS LLAMA_INCLUDE_INSTALL_DIR
-              LLAMA_LIB_INSTALL_DIR
-              LLAMA_BIN_INSTALL_DIR )
-
-write_basic_package_version_file(
-        ${CMAKE_CURRENT_BINARY_DIR}/llama-version.cmake
-    VERSION ${LLAMA_INSTALL_VERSION}
-    COMPATIBILITY SameMajorVersion)
-
-install(FILES ${CMAKE_CURRENT_BINARY_DIR}/llama-config.cmake
-              ${CMAKE_CURRENT_BINARY_DIR}/llama-version.cmake
-        DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/llama)
-
-install(
-    FILES convert_hf_to_gguf.py
-    PERMISSIONS
-        OWNER_READ
-        OWNER_WRITE
-        OWNER_EXECUTE
-        GROUP_READ
-        GROUP_EXECUTE
-        WORLD_READ
-        WORLD_EXECUTE
-    DESTINATION ${CMAKE_INSTALL_BINDIR})
-
-configure_file(cmake/llama.pc.in
-        "${CMAKE_CURRENT_BINARY_DIR}/llama.pc"
-        @ONLY)
-
-install(FILES "${CMAKE_CURRENT_BINARY_DIR}/llama.pc"
-        DESTINATION lib/pkgconfig)
-
-#
-# utils, programs, examples and tests
-#
-
-if (LLAMA_BUILD_COMMON)
-    add_subdirectory(common)
-endif()
-
-if (LLAMA_BUILD_TESTS AND NOT CMAKE_JS_VERSION)
-    include(CTest)
-    add_subdirectory(tests)
-endif()
-
-if (LLAMA_BUILD_EXAMPLES)
-    add_subdirectory(examples)
-    add_subdirectory(pocs)
-endif()
+# 安装目标
+install(TARGETS prima-main-ndn DESTINATION bin)
+install(TARGETS prima-ndn DESTINATION lib)
+install(DIRECTORY include/ DESTINATION include/prima-ndn)
